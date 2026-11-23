@@ -43,7 +43,8 @@
    ========================================================================= */
 
 /* ---------------- CONFIG（手感与难度全在这里） ---------------- */
-const W = 480, H = 270, TILE = 16;          // 逻辑分辨率（像素风，整数放大）
+const W = 480, H = 270, TILE = 16;          // 逻辑坐标系（游戏逻辑/碰撞用，保持不变）
+const VIEW_W = 1928, VIEW_H = 1024;          // 画布物理分辨率（网页全屏目标 1928×1024）
 const GRAVITY   = 1350;   // 重力 px/s²
 const JUMP_V    = -360;   // 起跳速度（单跳高度≈48px）
 const JUMP2_V   = -300;   // 二段跳速度
@@ -95,22 +96,69 @@ const C = {
   heart:'#ff6b8b', white:'#fff3e0', shadow:'#1a1030',
   shield:'#5ad1e6', magnet:'#ff8fd8', dash:'#9dff6b'
 };
-/* ---------------- v3 昼夜场景（天空/山/城市/地面） ---------------- */
+/* ---------------- 场景主题（10 套天空/山/城市/地面配色） ----------------
+   每 SCENE_M 米切换一个，循环播放；每套配专属环境粒子（见 ENV_PARTICLES）。 */
 const SCENES = [
+  // 0 黄昏（原 default）
   { name:'黄昏', skyTop:'#141229', skyMid:'#4a2350', skyLow:'#b3456b', skyHorizon:'#e8784f', sun:'#ffd98a', starAlpha:0.55,
     mtnFar:'#3c2450', mtnNear:'#2a1a3d', city:'#1d1330', window:'#e8784f',
     ground:'#6b4a7a', groundEdge:'#9d6bb0', grass:'#7ed0a0' },
+  // 1 夜晚
   { name:'夜晚', skyTop:'#050a1e', skyMid:'#0e1a3a', skyLow:'#1b2a52', skyHorizon:'#2c3a68', sun:'#e8f0ff', starAlpha:1,
     mtnFar:'#1a2244', mtnNear:'#121a33', city:'#0a1026', window:'#ffd98a',
     ground:'#3a3a5a', groundEdge:'#5a5a80', grass:'#5a9a8a' },
+  // 2 黎明
   { name:'黎明', skyTop:'#1a1a3a', skyMid:'#5a3a6a', skyLow:'#d06a7a', skyHorizon:'#ffb08a', sun:'#fff0c0', starAlpha:0.25,
     mtnFar:'#4a3055', mtnNear:'#352440', city:'#241a38', window:'#ffcc88',
     ground:'#6b5070', groundEdge:'#9d78a0', grass:'#7ec0a0' },
+  // 3 白昼
   { name:'白昼', skyTop:'#4a8ac0', skyMid:'#78b5da', skyLow:'#a8d8e8', skyHorizon:'#d8f0f0', sun:'#fff8d0', starAlpha:0,
     mtnFar:'#6a9ab0', mtnNear:'#4a7a94', city:'#3a5a74', window:'#fff0a0',
-    ground:'#7a6a5a', groundEdge:'#a08a70', grass:'#6ab080' }
+    ground:'#7a6a5a', groundEdge:'#a08a70', grass:'#6ab080' },
+  // 4 雪原 ❄ 冷蓝白 + 飘雪
+  { name:'雪原', skyTop:'#0d1b33', skyMid:'#2b4a6e', skyLow:'#7aa6c4', skyHorizon:'#d6e8f2', sun:'#eaf6ff', starAlpha:0.35,
+    mtnFar:'#8fb4cc', mtnNear:'#5c7f9c', city:'#3c5670', window:'#bfe4ff',
+    ground:'#c8dbe6', groundEdge:'#eef7ff', grass:'#eef7ff' },
+  // 5 熔岩 🌋 暗红黑 + 上升火星
+  { name:'熔岩', skyTop:'#160608', skyMid:'#4a1012', skyLow:'#9e2b18', skyHorizon:'#e85a1e', sun:'#ffb060', starAlpha:0.12,
+    mtnFar:'#3a1012', mtnNear:'#220809', city:'#180607', window:'#ff6a2a',
+    ground:'#3a2422', groundEdge:'#7a3a28', grass:'#ff7a3a' },
+  // 6 深海 🌊 青蓝绿 + 上升气泡
+  { name:'深海', skyTop:'#02101f', skyMid:'#063049', skyLow:'#0a5a70', skyHorizon:'#0e8a96', sun:'#7fe8d8', starAlpha:0.15,
+    mtnFar:'#084055', mtnNear:'#052a3a', city:'#041c28', window:'#4ad8c0',
+    ground:'#14424a', groundEdge:'#2a7a78', grass:'#4ad8a0' },
+  // 7 霓虹都市 🌃 紫粉青 + 霓虹光点
+  { name:'霓虹都市', skyTop:'#0a0518', skyMid:'#1d0b3a', skyLow:'#4a1258', skyHorizon:'#8a1a6e', sun:'#ff5ac8', starAlpha:0.4,
+    mtnFar:'#2a0e4a', mtnNear:'#1a0830', city:'#100520', window:'#00e5ff',
+    ground:'#2a1a3a', groundEdge:'#5a2a6a', grass:'#ff5ac8' },
+  // 8 沙漠绿洲 🏜 暖黄沙 + 飘沙
+  { name:'沙漠绿洲', skyTop:'#2a1a10', skyMid:'#7a4a28', skyLow:'#c88a48', skyHorizon:'#f0c078', sun:'#ffe0a0', starAlpha:0.1,
+    mtnFar:'#8a5a34', mtnNear:'#5c3a20', city:'#3c2818', window:'#ffd890',
+    ground:'#b89060', groundEdge:'#d8b080', grass:'#8ab060' },
+  // 9 晨雾竹林 🎋 青绿雾 + 飘落竹叶
+  { name:'晨雾竹林', skyTop:'#0e1c18', skyMid:'#25463a', skyLow:'#6a9a72', skyHorizon:'#b8d8a8', sun:'#f0f8d0', starAlpha:0.12,
+    mtnFar:'#3a5a44', mtnNear:'#27402f', city:'#1a2e22', window:'#c8e8a8',
+    ground:'#4a5c3a', groundEdge:'#7a9a58', grass:'#a8d86a' }
 ];
 const PAL_KEYS = ['skyTop','skyMid','skyLow','skyHorizon','sun','mtnFar','mtnNear','city','window','ground','groundEdge','grass'];
+/* ---------------- v4 环境粒子（每场景专属：雪花/火星/气泡/霓虹/沙尘/竹叶） ---------------- */
+const ENV_PARTICLES = [
+  { kind:'none',  color:'#ffffff' },                                        // 0 黄昏：无（保留落日氛围）
+  { kind:'none',  color:'#ffffff' },                                        // 1 夜晚：星星已独立绘制
+  { kind:'mote',  color:'#fff0c0', count:16, dir:1,  vy:9,  vx:6,  size:1 }, // 2 黎明：浮尘
+  { kind:'none',  color:'#ffffff' },                                        // 3 白昼：无
+  { kind:'snow',  color:'#ffffff', count:34, dir:1,  vy:22, vx:14, size:2 }, // 4 雪原：飘雪
+  { kind:'ember', color:'#ff7a3a', count:26, dir:-1, vy:30, vx:10, size:2 }, // 5 熔岩：上升火星
+  { kind:'bubble',color:'#7fe8d8', count:22, dir:-1, vy:20, vx:6,  size:2 }, // 6 深海：上升气泡
+  { kind:'neon',  color:'#00e5ff', count:20, dir:-1, vy:14, vx:8,  size:2 }, // 7 霓虹都市：霓虹光点
+  { kind:'sand',  color:'#f0c078', count:24, dir:1,  vy:16, vx:26, size:1 }, // 8 沙漠：横向飘沙
+  { kind:'leaf',  color:'#8ad86a', count:18, dir:1,  vy:18, vx:12, size:2 }  // 9 晨雾竹林：飘落竹叶
+];
+let envSeeds = [];
+function initEnvSeeds(){
+  envSeeds = [];
+  for (let i=0;i<48;i++) envSeeds.push({ x:Math.random()*W, y:Math.random()*H, ph:Math.random()*6.3, s:0.6+Math.random()*0.8 });
+}
 /* ---------------- v3 角色皮肤（成就解锁 + 轻被动） ---------------- */
 const SKINS = [
   { key:'hero',   name:'探险家', need:0, body:'#ffd166', dark:'#e08f3c', ant:'#ff6b8b', bonus:'经典配色' },
@@ -124,13 +172,18 @@ const MENU_SKIN_BOXES = SKINS.map((s,i)=>({k:s.key, x:W/2-138+i*56, y:144, w:52,
 /* ---------------- Canvas / 缩放 ---------------- */
 const cvs = document.getElementById('game');
 const ctx = cvs.getContext('2d');
-cvs.width = W; cvs.height = H;          // 固定逻辑分辨率，CSS 放大实现像素风
+cvs.width = VIEW_W; cvs.height = VIEW_H;   // 物理分辨率 1928×1024（高清画布）
 ctx.imageSmoothingEnabled = false;
-let scale = 1;
+// 等比放大：把 480×270 逻辑坐标映射到 1928×1024 画布，居中 letterbox，不拉伸变形
+const VIEW_SCALE = Math.min(VIEW_W / W, VIEW_H / H);
+const VIEW_OX = Math.floor((VIEW_W - W * VIEW_SCALE) / 2);
+const VIEW_OY = Math.floor((VIEW_H - H * VIEW_SCALE) / 2);
+let cssScale = 1;
 function resize(){
-  scale = Math.min(innerWidth / W, innerHeight / H);
-  cvs.style.width  = Math.floor(W * scale) + 'px';
-  cvs.style.height = Math.floor(H * scale) + 'px';
+  // CSS 显示尺寸适配浏览器窗口，保持 1928:1024 宽高比
+  cssScale = Math.min(innerWidth / VIEW_W, innerHeight / VIEW_H);
+  cvs.style.width  = Math.floor(VIEW_W * cssScale) + 'px';
+  cvs.style.height = Math.floor(VIEW_H * cssScale) + 'px';
   const st = document.getElementById('stage');
   st.style.width  = cvs.style.width;
   st.style.height = cvs.style.height;
@@ -272,6 +325,7 @@ function newGame(){
   // v3 重置
   nextBossM=BOSS_FIRST_M; bossKills=0; nextMilestoneM=MILESTONE_M; milestonesRun=0; hurtCount=0;
   sceneIdx=0; scenePrev=0; sceneBlend=1;
+  initEnvSeeds(); // v4 环境粒子种子
   // 起始安全大平台
   segments.push({x:0,y:curGround,w:260});
   spawnOn({x:0,y:curGround,w:260}, true);
@@ -439,7 +493,9 @@ addEventListener('keyup', e=>{
 cvs.addEventListener('pointerdown', e=>{
   e.preventDefault();
   const r=cvs.getBoundingClientRect();
-  const mx=(e.clientX-r.left)/r.width*W, my=(e.clientY-r.top)/r.height*H;
+  // 屏幕坐标 → 物理画布坐标 → 逻辑坐标（扣除 letterbox 偏移与缩放）
+  const mx=((e.clientX-r.left)/r.width*VIEW_W - VIEW_OX)/VIEW_SCALE;
+  const my=((e.clientY-r.top)/r.height*VIEW_H - VIEW_OY)/VIEW_SCALE;
   if (state===State.MENU){
     for (const b of MENU_DIFF_BOXES) if (inBox(mx,my,b)){ diffKey=b.k; SFX.coin(); return; }
     for (const b of MENU_SKIN_BOXES) if (inBox(mx,my,b)){ trySkin(b.k); return; }
@@ -688,6 +744,10 @@ function text(str,x,y,size,color,align){
   ctx.fillStyle = color; ctx.fillText(str,x,y);
 }
 function render(){
+  // 铺满整块物理画布（含 letterbox 黑边），再应用逻辑坐标→物理画布的等比变换
+  ctx.setTransform(1,0,0,1,0,0);
+  ctx.fillStyle='#0d0b18'; ctx.fillRect(0,0,VIEW_W,VIEW_H);
+  ctx.setTransform(VIEW_SCALE,0,0,VIEW_SCALE,VIEW_OX,VIEW_OY);
   const pal = getPal();
   // 天空渐变（随场景变化）
   const g = ctx.createLinearGradient(0,0,0,H);
@@ -721,6 +781,9 @@ function render(){
   drawMountains(0.15, pal.mtnFar, 178, 34, 0.012);
   drawMountains(0.32, pal.mtnNear, 205, 26, 0.02);
   drawCity(0.5, pal.city, 232, pal.window);
+
+  // v4 场景专属环境粒子（屏幕空间，缓慢飘动）
+  drawEnvParticles();
 
   ctx.save();
   const sh = shake>0.3 ? shake : 0;
@@ -868,6 +931,50 @@ function drawCity(par,color,base,winColor){
         if (((wx+wy+seed)|0)%3===0) ctx.fillRect(px(wx),px(wy),2,3);
     ctx.fillStyle=color;
   }
+}
+function drawEnvParticles(){
+  const cfg = ENV_PARTICLES[sceneIdx];
+  if (!cfg || cfg.kind==='none') return;
+  const n = cfg.count || 16;
+  // 场景过渡时淡入淡出，避免粒子突然跳变
+  ctx.globalAlpha = sceneBlend<1 ? 0.35 + 0.65*sceneBlend : 1;
+  ctx.fillStyle = cfg.color;
+  for (let i=0;i<n && i<envSeeds.length;i++){
+    const sd = envSeeds[i];
+    let x = (sd.x + Math.sin(tStars*0.6 + sd.ph)*cfg.vx*2.2) % W;
+    if (x<0) x+=W;
+    // dir=1 向下落，dir=-1 向上飘；用取模让粒子循环
+    let y = (sd.y + cfg.dir * tStars * cfg.vy * sd.s) % H;
+    if (y<0) y+=H;
+    const s = Math.max(1, Math.round(cfg.size * sd.s));
+    switch(cfg.kind){
+      case 'snow':   // 雪花：十字微光
+        ctx.fillRect(px(x),px(y),s,s); ctx.fillRect(px(x-1),px(y+1),s+2,1);
+        break;
+      case 'ember':  // 火星：亮点渐隐
+        ctx.globalAlpha = (sceneBlend<1?0.35+0.65*sceneBlend:1) * (0.5+0.5*Math.sin(tStars*4+sd.ph));
+        ctx.fillRect(px(x),px(y),s,s);
+        break;
+      case 'bubble': // 气泡：空心方框
+        ctx.globalAlpha = (sceneBlend<1?0.35+0.65*sceneBlend:1) * 0.7;
+        ctx.strokeStyle=cfg.color; ctx.lineWidth=1;
+        ctx.strokeRect(px(x)+0.5,px(y)+0.5,s+1,s+1);
+        break;
+      case 'neon':   // 霓虹光点：闪烁长条
+        ctx.globalAlpha = (sceneBlend<1?0.35+0.65*sceneBlend:1) * (0.4+0.6*Math.abs(Math.sin(tStars*3+sd.ph)));
+        ctx.fillRect(px(x),px(y),s,s+3);
+        break;
+      case 'sand':   // 飘沙：横向细线
+        ctx.fillRect(px(x),px(y),s+2,1);
+        break;
+      case 'leaf':   // 竹叶：斜向小条
+        ctx.fillRect(px(x),px(y),s+1,1); ctx.fillRect(px(x+1),px(y+1),1,1);
+        break;
+      default:       // 浮尘
+        ctx.fillRect(px(x),px(y),s,s);
+    }
+  }
+  ctx.globalAlpha = 1;
 }
 function drawPlayer(){
   const x=px(player.x), y=px(player.y), f=player.face, sk=curSkin();
