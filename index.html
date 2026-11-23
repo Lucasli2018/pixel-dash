@@ -37,8 +37,8 @@
 <script>
 "use strict";
 /* =========================================================================
-   PIXEL DASH · 像素狂奔
-   单文件横版无尽平台跳跃 · 计分 / 生命 / 程序化音效 / 全端自适应
+   PIXEL DASH · 像素狂奔  v2
+   单文件横版无尽平台跳跃 · 计分 / 生命 / 难度分级 / 道具 / 排行榜成就 / 全端自适应
    ========================================================================= */
 
 /* ---------------- CONFIG（手感与难度全在这里） ---------------- */
@@ -46,19 +46,37 @@ const W = 480, H = 270, TILE = 16;          // 逻辑分辨率（像素风，整
 const GRAVITY   = 1350;   // 重力 px/s²
 const JUMP_V    = -360;   // 起跳速度（单跳高度≈48px）
 const JUMP2_V   = -300;   // 二段跳速度
-const RUN_BASE  = 150;    // 初始奔跑速度 px/s
-const RUN_MAX   = 255;    // 速度上限
+const RUN_BASE  = 150;    // 初始奔跑速度 px/s（普通难度基准）
+const RUN_MAX   = 255;    // 速度上限（普通难度基准）
 const MAX_FALL  = 680;    // 最大下落速度
 const COYOTE    = 0.10;   // 土狼时间
 const JUMP_BUF  = 0.12;   // 跳跃缓冲
 const JUMP_CUT  = 0.45;   // 松手短跳系数
-const MAX_LIVES = 3;      // 生命数
+const MAX_LIVES = 3;      // 默认生命数（普通难度，实际取难度表）
 const INVULN    = 1.2;    // 受伤无敌秒数
 const STOMP_V   = -270;   // 踩怪弹起速度
-const GAP_MIN   = 28, GAP_MAX = 68;   // 平台间隙范围
+const GAP_MIN   = 28, GAP_MAX = 68;   // 默认平台间隙（普通难度基准）
 const SEG_W_MIN = 90, SEG_W_MAX = 190;// 平台段宽度范围
 const GROUND_MIN = 150, GROUND_MAX = 218; // 地面高度范围
 const STEP = 1/60;        // 固定物理步长
+/* ---------------- v2 难度分级 ---------------- */
+const DIFFS = {
+  easy:   { name:'简单', runBase:120, runMax:200, ramp:0.008, gap:[22,52], mob:0.16, lives:5 },
+  normal: { name:'普通', runBase:150, runMax:255, ramp:0.012, gap:[28,68], mob:0.28, lives:3 },
+  hard:   { name:'困难', runBase:185, runMax:310, ramp:0.018, gap:[36,82], mob:0.42, lives:2 }
+};
+const DIFF_KEYS = ['easy','normal','hard'];
+let diffKey = 'normal';   // 当前菜单选择的难度
+let D = DIFFS.normal;     // 当前生效的难度参数
+// 菜单难度格子 & 开始按钮的点击区域（逻辑坐标）
+const MENU_DIFF_BOXES = DIFF_KEYS.map((k,i)=>({k, x:W/2-96+i*64, y:118, w:58, h:22}));
+const OVER_MENU_BOX = {x:W/2-80, y:206, w:160, h:16};
+/* ---------------- v2 道具参数 ---------------- */
+const POWER_RATE   = 0.14;  // 每段生成道具的概率
+const MAGNET_TIME  = 8;     // 磁铁持续秒数
+const DASH_TIME    = 5;     // 冲刺持续秒数
+const MAGNET_RANGE = 95;    // 磁铁吸附范围
+const DASH_MULT    = 1.55;  // 冲刺速度倍率
 /* ---------------------------------------------------------------- */
 
 /* ---------------- 调色板（复古黄昏） ---------------- */
@@ -68,7 +86,8 @@ const C = {
   ground:'#6b4a7a', groundEdge:'#9d6bb0', groundTop:'#c98fb0', grass:'#7ed0a0',
   player:'#ffd166', playerDark:'#e08f3c', eye:'#2a1830',
   coin:'#ffe066', coinDark:'#f5a623', slime:'#ff6b8b', slimeDark:'#c83f63',
-  heart:'#ff6b8b', white:'#fff3e0', shadow:'#1a1030'
+  heart:'#ff6b8b', white:'#fff3e0', shadow:'#1a1030',
+  shield:'#5ad1e6', magnet:'#ff8fd8', dash:'#9dff6b'
 };
 
 /* ---------------- Canvas / 缩放 ---------------- */
@@ -121,7 +140,9 @@ const SFX = {
   hurt(){ tone(300,0.28,'sawtooth',0.24,70); },
   die(){ tone(400,0.5,'sawtooth',0.26,60); tone(200,0.6,'square',0.12,40,0.08); },
   start(){ [523,659,784,1047].forEach((f,i)=>tone(f,0.12,'square',0.18,null,i*0.07)); },
-  over(){ [523,392,330,262].forEach((f,i)=>tone(f,0.22,'square',0.18,null,i*0.13)); }
+  over(){ [523,392,330,262].forEach((f,i)=>tone(f,0.22,'square',0.18,null,i*0.13)); },
+  power(){ [660,880,1100].forEach((f,i)=>tone(f,0.10,'triangle',0.16,null,i*0.05)); },
+  shieldBreak(){ tone(880,0.18,'sine',0.18,220); }
 };
 // 轻量 8-bit 背景旋律
 const MELODY = [0,4,7,12,7,4,0,4, 5,9,12,17,12,9,5,9, 2,7,9,14,9,7,2,7, 0,4,7,12,7,4,0,-1];
@@ -143,25 +164,42 @@ function updateMusic(dt){
 const State = { MENU:0, PLAY:1, PAUSE:2, OVER:3 };
 let state = State.MENU;
 let score, best, lives, distance, coinsGot, combo, comboTimer, shake, flash, slowmo;
-let segments, coinList, enemyList, particles, floaters;
+let segments, coinList, enemyList, particles, floaters, powerList, toasts;
 let player, cam, nextSegX, curGround, lastSafe, spawnedDist, runSpeed;
 let tStars = 0;
+/* ---------------- v2 排行榜 / 成就 / 道具状态 ---------------- */
+let scores = [], achv = {}, newAchv = [];
+let shieldOn, magnetT, dashT;
+let stompsTotal, maxComboRun;
+
+function loadJSON(key, def){
+  try { const v = JSON.parse(localStorage.getItem(key)); return v || def; }
+  catch(e){ return def; }
+}
+function saveJSON(key, val){
+  try { localStorage.setItem(key, JSON.stringify(val)); } catch(e){}
+}
 
 try { best = parseInt(localStorage.getItem('pixeldash_best')||'0',10)||0; }
 catch(e){ best = 0; }
+scores = loadJSON('pixeldash_scores', []);
+achv   = loadJSON('pixeldash_achv', {});
 
 function newGame(){
-  score=0; lives=MAX_LIVES; distance=0; coinsGot=0; combo=0; comboTimer=0;
+  D = DIFFS[diffKey];
+  score=0; lives=D.lives; distance=0; coinsGot=0; combo=0; comboTimer=0;
   shake=0; flash=0; slowmo=0; cam={x:0}; tStars=0;
-  segments=[]; coinList=[]; enemyList=[]; particles=[]; floaters=[];
-  nextSegX=0; curGround=196; spawnedDist=0; runSpeed=RUN_BASE;
+  segments=[]; coinList=[]; enemyList=[]; particles=[]; floaters=[]; powerList=[]; toasts=[];
+  newAchv=[]; stompsTotal=0; maxComboRun=0;
+  shieldOn=false; magnetT=0; dashT=0;
+  nextSegX=0; curGround=196; spawnedDist=0; runSpeed=D.runBase;
   // 起始安全大平台
   segments.push({x:0,y:curGround,w:260});
   spawnOn({x:0,y:curGround,w:260}, true);
   nextSegX = 260 + 60;
   player = {
     x:40, y:curGround-16, px:curGround-16, w:12, h:16,
-    vx:RUN_BASE, vy:0, onGround:true, coyote:0, jumps:0, face:1,
+    vx:D.runBase, vy:0, onGround:true, coyote:0, jumps:0, face:1,
     invuln:0, runAnim:0, dead:false
   };
   lastSafe = {x:40, y:curGround};
@@ -178,7 +216,7 @@ newGame(); // 工具函数就绪后再初始化（避免 TDZ）
 
 /* ---------------- 世界生成 ---------------- */
 function spawnOn(seg, safe){
-  // 金币：一半段放弧线金币
+  // 金币：多数段放弧线金币
   if (Math.random()<0.72){
     const n = rndi(2,4);
     const startX = seg.x + 18;
@@ -187,8 +225,16 @@ function spawnOn(seg, safe){
       coinList.push({ x:startX+i*18, y:baseY - Math.sin(i/(n-1||1)*Math.PI)*12, got:false, ph:rnd(0,6.3) });
     }
   }
+  // v2 道具：护盾 / 磁铁 / 冲刺
+  if (!safe && seg.w>90 && Math.random() < POWER_RATE){
+    const types = ['shield','magnet','dash'];
+    powerList.push({
+      x: seg.x + seg.w*rnd(0.35,0.65), y: seg.y - 24,
+      type: types[rndi(0,2)], ph: rnd(0,6.3), got:false
+    });
+  }
   // 怪物：非起始段按比例出现，难度越高越多
-  if (!safe && seg.w>90 && Math.random() < 0.28 + Math.min(distance/4000,0.35)){
+  if (!safe && seg.w>90 && Math.random() < D.mob + Math.min(distance/6000,0.25)){
     const mx = seg.x + seg.w*rnd(0.4,0.7);
     enemyList.push({
       x:mx, y:seg.y-12, w:14, h:12, vx:(Math.random()<0.5?-1:1)*32,
@@ -204,7 +250,7 @@ function generateAhead(targetX){
     const seg = {x:nextSegX, y:curGround, w:w};
     segments.push(seg);
     spawnOn(seg, false);
-    nextSegX = seg.x + w + rnd(GAP_MIN, GAP_MAX);
+    nextSegX = seg.x + w + rnd(D.gap[0], D.gap[1]);
   }
 }
 function recycle(){
@@ -214,9 +260,11 @@ function recycle(){
   enemyList = enemyList.filter(e=>!e.dead && e.x > left);
   particles = particles.filter(p=>p.life>0);
   floaters  = floaters.filter(f=>f.life>0);
+  powerList = powerList.filter(p=>!p.got && p.x > left);
+  toasts    = toasts.filter(t=>t.life>0);
 }
 
-/* ---------------- 粒子 & 浮字 ---------------- */
+/* ---------------- 粒子 & 浮字 & 成就 ---------------- */
 function burst(x,y,color,n,spd){
   for (let i=0;i<n;i++){
     const a = rnd(0,Math.PI*2), s = rnd(spd*0.3,spd);
@@ -224,6 +272,19 @@ function burst(x,y,color,n,spd){
   }
 }
 function floater(x,y,text,color){ floaters.push({x,y,text,color,life:0.9}); }
+function toast(msg,color){ toasts.push({text:msg,color:color||C.white,life:2.2}); }
+const ACHV_NAMES = {
+  first_coin:'金币新手', slayer:'史莱姆克星', combo10:'连击大师',
+  dist500:'五百米', dist1000:'千米跑者', rich:'富甲一方', hardcore:'硬核狂奔'
+};
+function checkAchv(id, cond){
+  if (!cond || achv[id]) return;
+  achv[id]=true; saveJSON('pixeldash_achv', achv);
+  const name=ACHV_NAMES[id]||id;
+  newAchv.push(name);
+  toast('★ 成就解锁：'+name, C.coin);
+  SFX.power();
+}
 
 /* ---------------- 输入 ---------------- */
 let jumpBuf = 0;
@@ -245,10 +306,21 @@ function toggleMute(){
   document.getElementById('btnSound').textContent = muted ? '✕' : '♪';
   if (!muted) ensureAudio();
 }
+function inBox(mx,my,b){ return mx>=b.x && mx<=b.x+b.w && my>=b.y && my<=b.y+b.h; }
 addEventListener('keydown', e=>{
   if (['Space','ArrowUp','ArrowLeft','ArrowRight','ArrowDown','KeyW'].includes(e.code)) e.preventDefault();
   if ((e.code==='Space'||e.code==='ArrowUp'||e.code==='KeyW')){ if(!e.repeat) jumpAction(); return; }
   if (e.repeat) return;
+  // 菜单：左右切换难度 / 数字键直选
+  if (state===State.MENU && (e.code==='ArrowLeft'||e.code==='ArrowRight')){
+    let i=DIFF_KEYS.indexOf(diffKey);
+    i=(i+(e.code==='ArrowRight'?1:DIFF_KEYS.length-1))%DIFF_KEYS.length;
+    diffKey=DIFF_KEYS[i]; SFX.coin(); return;
+  }
+  if (state===State.MENU && ['Digit1','Digit2','Digit3'].includes(e.code)){
+    diffKey=DIFF_KEYS[+e.code.slice(-1)-1]; SFX.coin(); return;
+  }
+  if (state===State.OVER && e.code==='KeyB'){ state=State.MENU; return; } // 结算回菜单
   if (e.code==='KeyP'||e.code==='Escape') togglePause();
   else if (e.code==='KeyM') toggleMute();
   else if (e.code==='KeyR'){ if(state!==State.MENU){ newGame(); state=State.PLAY; } }
@@ -256,8 +328,20 @@ addEventListener('keydown', e=>{
 addEventListener('keyup', e=>{
   if (e.code==='Space'||e.code==='ArrowUp'||e.code==='KeyW') cutJump();
 });
-// Canvas 触摸 / 鼠标：按下跳，松开短跳
-cvs.addEventListener('pointerdown', e=>{ e.preventDefault(); jumpAction(); });
+// Canvas 触摸 / 鼠标：按下跳，松开短跳；菜单/结算有专属点击区
+cvs.addEventListener('pointerdown', e=>{
+  e.preventDefault();
+  const r=cvs.getBoundingClientRect();
+  const mx=(e.clientX-r.left)/r.width*W, my=(e.clientY-r.top)/r.height*H;
+  if (state===State.MENU){
+    for (const b of MENU_DIFF_BOXES){
+      if (inBox(mx,my,b)){ diffKey=b.k; SFX.coin(); return; }
+    }
+    jumpAction(); return; // 点其它区域 = 开始
+  }
+  if (state===State.OVER && inBox(mx,my,OVER_MENU_BOX)){ state=State.MENU; return; }
+  jumpAction();
+});
 cvs.addEventListener('pointerup',   e=>{ e.preventDefault(); cutJump(); });
 document.getElementById('btnPause').addEventListener('pointerdown', e=>{ e.stopPropagation(); e.preventDefault(); togglePause(); });
 document.getElementById('btnSound').addEventListener('pointerdown', e=>{ e.stopPropagation(); e.preventDefault(); toggleMute(); });
@@ -265,6 +349,14 @@ document.getElementById('btnSound').addEventListener('pointerdown', e=>{ e.stopP
 /* ---------------- 更新 ---------------- */
 function hurt(reason){
   if (player.invuln>0 || player.dead) return;
+  // v2 护盾：免疫一次伤害
+  if (shieldOn){
+    shieldOn=false; player.invuln=0.6; shake=5; SFX.shieldBreak();
+    burst(player.x+6,player.y+8,C.shield,16,150);
+    toast('护盾抵挡！', C.shield); return;
+  }
+  // v2 冲刺：撞怪不扣血（由碰撞处理处直接消灭）
+  if (dashT>0 && reason==='enemy') return;
   lives--; combo=0; comboTimer=0; shake=9; flash=0.25; slowmo=0.08;
   SFX.hurt(); burst(player.x+player.w/2, player.y+player.h/2, C.heart, 14, 160);
   if (lives<=0){ gameOver(); return; }
@@ -282,6 +374,16 @@ function gameOver(){
   player.dead = true; state = State.OVER;
   const s = Math.floor(score);
   if (s>best){ best=s; try{ localStorage.setItem('pixeldash_best', String(best)); }catch(e){} }
+  // v2 排行榜 Top 5
+  scores.push({ s:s, m:Math.floor(distance/20), c:coinsGot, d:diffKey });
+  scores.sort((a,b)=>b.s-a.s);
+  scores = scores.slice(0,5);
+  saveJSON('pixeldash_scores', scores);
+  // v2 结算成就检查
+  checkAchv('dist500', Math.floor(distance/20)>=500);
+  checkAchv('dist1000', Math.floor(distance/20)>=1000);
+  checkAchv('rich', coinsGot>=50);
+  checkAchv('hardcore', diffKey==='hard' && Math.floor(distance/20)>=300);
   SFX.die(); SFX.over(); shake=12;
 }
 function jumpNow(){
@@ -301,9 +403,10 @@ function update(dt){
   if (slowmo>0){ slowmo-=dt; }
   if (state!==State.PLAY){ jumpBuf=0; return; }
 
-  // 难度：距离越远越快
-  runSpeed = Math.min(RUN_MAX, RUN_BASE + distance*0.012);
-  if (player.vx < runSpeed && player.invuln<=0) player.vx = Math.min(runSpeed, player.vx + 600*dt);
+  // 难度：按当前档位递增；冲刺期间额外加速
+  runSpeed = Math.min(D.runMax, D.runBase + distance*D.ramp) * (dashT>0?DASH_MULT:1);
+  if (player.vx < runSpeed && player.invuln<=0) player.vx = Math.min(runSpeed, player.vx + 900*dt);
+  if (player.vx > runSpeed && dashT<=0) player.vx = Math.max(runSpeed, player.vx - 600*dt);
 
   // 跳跃缓冲 / 土狼时间
   if (jumpBuf>0) jumpBuf-=dt;
@@ -340,19 +443,47 @@ function update(dt){
       const fromAbove = player.vy>0 && (player.px+player.h) <= e.y+6;
       if (fromAbove){
         e.dead=true; player.vy=STOMP_V; player.jumps=1;
-        addScore(25); addCombo(); shake=4; SFX.stomp();
+        addScore(25); addCombo(); shake=4; SFX.stomp(); stompsTotal++;
+        checkAchv('slayer', stompsTotal>=10);
         burst(e.x+7,e.y+6,C.slime,12,150); floater(e.x+7,e.y-4,'+'+25,'#ffd166');
+      } else if (dashT>0){
+        // v2 冲刺：直接撞碎怪物
+        e.dead=true; addScore(15); SFX.stomp(); stompsTotal++;
+        checkAchv('slayer', stompsTotal>=10);
+        burst(e.x+7,e.y+6,C.dash,12,160); floater(e.x+7,e.y-4,'冲撞+15','#9dff6b');
       } else hurt('enemy');
     }
   }
 
-  // 金币
+  // 金币（v2 磁铁：范围内自动吸附）
   for (const c of coinList){
     if (c.got) continue;
     c.ph += dt*5;
-    if (Math.abs((c.x)-(player.x+player.w/2))<12 && Math.abs(c.y-(player.y+player.h/2))<13){
+    const cdx = (player.x+player.w/2)-c.x, cdy = (player.y+player.h/2)-c.y;
+    if (magnetT>0 && Math.hypot(cdx,cdy)<MAGNET_RANGE){
+      const k = Math.min(1, 6*dt);
+      c.x += cdx*k; c.y += cdy*k;
+    }
+    const ndx = (player.x+player.w/2)-c.x, ndy = (player.y+player.h/2)-c.y;
+    if (Math.abs(ndx)<12 && Math.abs(ndy)<13){
       c.got=true; coinsGot++; addScore(10); addCombo(); SFX.coin();
       burst(c.x,c.y,C.coin,8,90); floater(c.x,c.y-6,'+'+10,'#ffe066');
+      checkAchv('first_coin', true);
+      checkAchv('rich', coinsGot>=50);
+    }
+  }
+
+  // v2 道具拾取
+  for (const p of powerList){
+    if (p.got) continue;
+    p.ph += dt*4;
+    if (hit(player,{x:p.x-8,y:p.y-8,w:16,h:16})){
+      p.got=true; SFX.power();
+      const col = p.type==='shield'?C.shield:p.type==='magnet'?C.magnet:C.dash;
+      burst(p.x,p.y,col,14,130);
+      if (p.type==='shield'){ shieldOn=true; toast('护盾就位 · 抵挡一次伤害', C.shield); }
+      else if (p.type==='magnet'){ magnetT=MAGNET_TIME; toast('磁铁 8 秒 · 自动吸金币', C.magnet); }
+      else { dashT=DASH_TIME; toast('冲刺 5 秒 · 无敌撞怪', C.dash); }
     }
   }
 
@@ -364,13 +495,18 @@ function update(dt){
   generateAhead(cam.x + W);
   recycle();
 
-  // 无敌计时 / combo 超时
+  // 无敌计时 / combo 超时 / 道具计时
   if (player.invuln>0) player.invuln-=dt;
   if (comboTimer>0){ comboTimer-=dt; if(comboTimer<=0) combo=0; }
+  if (magnetT>0) magnetT-=dt;
+  if (dashT>0) dashT-=dt;
+  if (combo>maxComboRun) maxComboRun=combo;
+  checkAchv('combo10', maxComboRun>=10);
 
-  // 粒子 & 浮字
+  // 粒子 & 浮字 & 提示
   for (const p of particles){ p.life-=dt; p.vy+=200*dt; p.x+=p.vx*dt; p.y+=p.vy*dt; }
   for (const f of floaters){ f.life-=dt; f.y-=26*dt; }
+  for (const t of toasts){ t.life-=dt; }
 
   // 掉深渊
   if (player.y > H+40) hurt('fall');
@@ -454,6 +590,21 @@ function render(){
     ctx.fillStyle=C.coin;     ctx.fillRect(px(c.x-w/2),px(c.y-4),px(w-2),8);
   }
 
+  // v2 道具（漂浮发光方块）
+  for (const p of powerList){
+    if (p.got) continue;
+    const fy = p.y + Math.sin(p.ph)*3;
+    const col = p.type==='shield'?C.shield:p.type==='magnet'?C.magnet:C.dash;
+    ctx.globalAlpha=0.35; ctx.fillStyle=col; ctx.fillRect(px(p.x-11),px(fy-11),22,22);
+    ctx.globalAlpha=1;
+    ctx.fillStyle=C.shadow; ctx.fillRect(px(p.x-8),px(fy-8),16,16);
+    ctx.fillStyle=col;      ctx.fillRect(px(p.x-7),px(fy-7),14,14);
+    ctx.fillStyle=C.shadow; ctx.font='bold 10px "Courier New",monospace';
+    ctx.textAlign='center'; ctx.textBaseline='middle';
+    ctx.fillText(p.type==='shield'?'S':p.type==='magnet'?'M':'D', px(p.x), px(fy)+1);
+    ctx.textAlign='left'; ctx.textBaseline='alphabetic';
+  }
+
   // 怪物（史莱姆）
   for (const e of enemyList){
     if (e.dead) continue;
@@ -467,8 +618,17 @@ function render(){
     ctx.fillRect(ex+3,ey+5,1,1); ctx.fillRect(ex+9,ey+5,1,1);
   }
 
-  // 玩家
+  // 玩家（v2 护盾光环 / 冲刺拖尾）
   if (!player.dead){
+    if (dashT>0){
+      ctx.globalAlpha=0.4; ctx.fillStyle=C.dash;
+      for (let i=1;i<=3;i++) ctx.fillRect(px(player.x-i*6),px(player.y+2),10,12);
+      ctx.globalAlpha=1;
+    }
+    if (shieldOn){
+      ctx.strokeStyle=C.shield; ctx.lineWidth=2;
+      ctx.beginPath(); ctx.arc(px(player.x+6),px(player.y+8),13+Math.sin(tStars*8)*1.5,0,Math.PI*2); ctx.stroke();
+    }
     const blink = player.invuln>0 && Math.floor(player.invuln*12)%2===0;
     if (!blink) drawPlayer();
   }
@@ -489,6 +649,15 @@ function render(){
   ctx.restore();
 
   drawHUD();
+
+  // v2 提示条（道具 / 成就）
+  for (const t of toasts){
+    ctx.globalAlpha=clamp(t.life,0,1);
+    ctx.fillStyle='rgba(20,12,32,.88)'; ctx.fillRect(W/2-78,40,156,18);
+    ctx.strokeStyle=t.color; ctx.lineWidth=1; ctx.strokeRect(W/2-78,40,156,18);
+    text(t.text, W/2, 53, 9, t.color, 'center');
+    ctx.globalAlpha=1;
+  }
 
   // 受击闪白
   if (flash>0){ ctx.globalAlpha=clamp(flash*2,0,0.5); ctx.fillStyle=C.white; ctx.fillRect(0,0,W,H); ctx.globalAlpha=1; }
@@ -551,14 +720,31 @@ function drawHUD(){
   text(String(Math.floor(score)).padStart(5,'0'), 10, 34, 16, C.white);
   text('HI '+String(best).padStart(5,'0'), 10, 48, 9, C.coin);
   // 生命（右上偏下，避开按钮）
-  for (let i=0;i<MAX_LIVES;i++) drawHeart(W-16-i*20, 44, 2, i<lives?C.heart:'#5a4058');
+  for (let i=0;i<D.lives;i++) drawHeart(W-16-i*20, 44, 2, i<lives?C.heart:'#5a4058');
+  // v2 难度标识
+  text(D.name, W-12, 84, 9, C.star, 'right');
   // 距离
   text(Math.floor(distance/20)+'m', W-12, 66, 9, C.star, 'right');
+  // v2 道具状态条
+  let py=104;
+  if (shieldOn){
+    ctx.fillStyle=C.shield; ctx.fillRect(W-52,py,40,3);
+    text('SHIELD', W-12, py-3, 8, C.shield, 'right'); py+=14;
+  }
+  if (magnetT>0){
+    ctx.fillStyle='#5a4058'; ctx.fillRect(W-52,py,40,3);
+    ctx.fillStyle=C.magnet; ctx.fillRect(W-52,py,40*clamp(magnetT/MAGNET_TIME,0,1),3);
+    text('MAGNET', W-12, py-3, 8, C.magnet, 'right'); py+=14;
+  }
+  if (dashT>0){
+    ctx.fillStyle='#5a4058'; ctx.fillRect(W-52,py,40,3);
+    ctx.fillStyle=C.dash; ctx.fillRect(W-52,py,40*clamp(dashT/DASH_TIME,0,1),3);
+    text('DASH', W-12, py-3, 8, C.dash, 'right'); py+=14;
+  }
   // Combo
   if (combo>=2){
     const m=comboMult();
     text('COMBO x'+m, W/2, 26, 12, C.coin, 'center');
-    // combo 计时条
     ctx.fillStyle='#5a4058'; ctx.fillRect(W/2-30,32,60,3);
     ctx.fillStyle=C.coin; ctx.fillRect(W/2-30,32,60*clamp(comboTimer/2.2,0,1),3);
   }
@@ -571,15 +757,24 @@ function panel(w,h){
 }
 function drawMenu(){
   ctx.fillStyle='rgba(13,11,24,.35)'; ctx.fillRect(0,0,W,H);
-  panel(300,168);
-  text('PIXEL  DASH', W/2, 78, 27, C.player, 'center');
-  text('像 素 狂 奔', W/2, 100, 12, C.grass, 'center');
-  text('跳过深渊 · 收集金币 · 踩扁史莱姆', W/2, 128, 10, C.star, 'center');
-  text('空格 / 点击 = 跳（空中可再跳一次）', W/2, 146, 9, C.white, 'center');
-  text('P 暂停 · M 静音 · R 重开', W/2, 162, 9, C.coin, 'center');
+  panel(300,182);
+  text('PIXEL  DASH', W/2, 68, 25, C.player, 'center');
+  text('像 素 狂 奔', W/2, 88, 11, C.grass, 'center');
+  // v2 难度选择
+  text('选择难度  ← → 或按 1/2/3', W/2, 110, 9, C.star, 'center');
+  for (const b of MENU_DIFF_BOXES){
+    const d=DIFFS[b.k], sel = b.k===diffKey;
+    ctx.fillStyle=sel?'#6b4a7a':'#3d2a5e'; ctx.fillRect(b.x,b.y,b.w,b.h);
+    ctx.strokeStyle=sel?C.player:'#5a4058'; ctx.lineWidth=sel?2:1;
+    ctx.strokeRect(b.x+1,b.y+1,b.w-2,b.h-2);
+    text(d.name, b.x+b.w/2, b.y+15, 10, sel?C.white:C.star, 'center');
+  }
+  text(D.lives+' 条命 · '+D.name+'难度 · 起点 '+D.runBase+' 速', W/2, 156, 9, C.coin, 'center');
+  text('空格 / 点击 = 跳（空中可再跳一次）', W/2, 176, 9, C.white, 'center');
   const a = 0.55+0.45*Math.abs(Math.sin(tStars*3));
-  ctx.globalAlpha=a; text('▶ 按空格或点击开始 ◀', W/2, 190, 11, C.player, 'center'); ctx.globalAlpha=1;
-  text('HI '+best, W/2, 210, 9, C.grass, 'center');
+  ctx.globalAlpha=a; text('▶ 开始游戏 ◀', W/2, 198, 12, C.player, 'center'); ctx.globalAlpha=1;
+  const unlocked=Object.keys(achv).filter(k=>achv[k]).length;
+  text('HI '+best+'    成就 '+unlocked+'/7    P暂停 M静音', W/2, 216, 8, C.grass, 'center');
 }
 function drawPause(){
   ctx.fillStyle='rgba(13,11,24,.55)'; ctx.fillRect(0,0,W,H);
@@ -589,16 +784,24 @@ function drawPause(){
 }
 function drawOver(){
   ctx.fillStyle='rgba(13,11,24,.6)'; ctx.fillRect(0,0,W,H);
-  panel(280,176);
+  panel(320,206);
   const s=Math.floor(score), isNew = s>=best && s>0;
-  text('GAME  OVER', W/2, 72, 22, C.slime, 'center');
-  if (isNew) text('★ 新纪录 ★', W/2, 92, 12, C.coin, 'center');
-  text('得分', W/2-56, 118, 10, C.star, 'center');
-  text(String(s), W/2+40, 118, 14, C.white, 'center');
-  text('最高', W/2-56, 140, 10, C.star, 'center');
-  text(String(best), W/2+40, 140, 12, C.coin, 'center');
-  text('距离 '+Math.floor(distance/20)+'m    金币 '+coinsGot, W/2, 162, 10, C.grass, 'center');
-  text('按空格 / 点击 再来一局', W/2, 190, 11, C.player, 'center');
+  text('GAME  OVER', W/2, 62, 22, C.slime, 'center');
+  if (isNew) text('★ 新纪录 ★', W/2, 82, 11, C.coin, 'center');
+  text('本局 '+s+'  ·  最高 '+best, W/2, 102, 11, C.white, 'center');
+  text('距离 '+Math.floor(distance/20)+'m  金币 '+coinsGot+'  踩怪 '+stompsTotal, W/2, 118, 9, C.grass, 'center');
+  // v2 排行榜 Top 3
+  text('—— 本地排行榜 TOP 3 ——', W/2, 136, 9, C.star, 'center');
+  for (let i=0;i<3;i++){
+    const r=scores[i];
+    if (!r) break;
+    const line=(i+1)+'. '+String(r.s).padStart(5,'0')+'   '+r.m+'m   '+(DIFFS[r.d]?DIFFS[r.d].name:'');
+    text(line, W/2, 152+i*13, 9, i===0?C.coin:C.white, 'center');
+  }
+  if (newAchv.length) text('本局解锁：'+newAchv.join('、'), W/2, 198, 8, C.coin, 'center');
+  text('空格 / 点击 = 再来一局', W/2, OVER_MENU_BOX.y, 9, C.player, 'center');
+  ctx.fillStyle='#5a4058'; ctx.fillRect(OVER_MENU_BOX.x,OVER_MENU_BOX.y+2,OVER_MENU_BOX.w,1);
+  text('〔 返回菜单选难度 / B 〕', W/2, OVER_MENU_BOX.y+14, 8, C.star, 'center');
 }
 
 /* ---------------- 主循环（固定步长） ---------------- */
