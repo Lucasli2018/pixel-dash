@@ -37,10 +37,10 @@
 <script>
 "use strict";
 /* =========================================================================
-   PIXEL DASH · 像素狂奔  v5
+   PIXEL DASH · 像素狂奔  v6
    单文件横版无尽平台跳跃 · 计分/生命/难度/道具/排行榜成就
-   + 精英Boss(地面/飞行) / 角色皮肤 / 10场景循环 / 里程碑奖励
-   + v5 场景专属机关：冰面加速 / 喷火柱 / 气泡喷口 / 激光栅栏
+   + 精英Boss四变体(地面/飞行/分裂/护盾) / 角色皮肤 / 10场景循环 / 里程碑奖励
+   + 场景专属机关：冰面加速 / 喷火柱 / 气泡喷口 / 激光栅栏 / 流沙 / 摇摆竹竿 / 龙卷风
    ========================================================================= */
 
 /* ---------------- CONFIG（手感与难度全在这里） ---------------- */
@@ -98,6 +98,14 @@ const LASER_OFF    = 1.2;   // 循环内熄灭时长（剩余为点亮）
 const LASER_H      = 34;    // 激光高度（可跳过）
 const VENT_H       = 64;    // 气泡上升柱有效高度
 const VENT_LIFT    = 980;   // 气泡托举加速度 px/s²
+/* ---------------- v6 场景机关 / Boss 变体 ---------------- */
+const SAND_SLOW    = 0.72;  // 流沙区域奔跑速度倍率
+const BAMBOO_H     = 44;    // 摇摆竹竿长度（可跳过）
+const BAMBOO_AMP   = 0.85;  // 竹竿摆动弧度上限
+const BAMBOO_SPD   = 1.6;   // 竹竿摆动角速度
+const TORNADO_VX   = -28;   // 龙卷风向左漂移速度 px/s
+const TORNADO_H    = 80;    // 龙卷风吸力有效高度
+const TORNADO_LIFT = 1300;  // 龙卷风吸力加速度 px/s²
 /* ---------------------------------------------------------------- */
 
 /* ---------------- 调色板（基础色，角色/金币/道具固定用） ---------------- */
@@ -248,7 +256,10 @@ const SFX = {
   skin(){ tone(880,0.10,'triangle',0.15); tone(1320,0.12,'triangle',0.12,null,0.08); },
   // v5 机关音效
   erupt(){ tone(90,0.5,'sawtooth',0.16,40); tone(60,0.55,'square',0.10,30,0.03); },
-  laser(){ tone(1400,0.09,'sawtooth',0.09,280); }
+  laser(){ tone(1400,0.09,'sawtooth',0.09,280); },
+  // v6 音效
+  bossShieldBreak(){ tone(500,0.12,'square',0.15,120); tone(900,0.10,'triangle',0.12,null,0.06); },
+  split(){ tone(300,0.12,'sawtooth',0.14,60); tone(450,0.10,'square',0.10,null,0.08); }
 };
 // 轻量 8-bit 背景旋律
 const MELODY = [0,4,7,12,7,4,0,4, 5,9,12,17,12,9,5,9, 2,7,9,14,9,7,2,7, 0,4,7,12,7,4,0,-1];
@@ -423,7 +434,7 @@ function generateAhead(targetX){
     spawnOn(seg, false);
     // v5 雪原场景：部分平台变为冰面（跑上去会加速）
     if (sceneAtX(seg.x)===4) seg.ice = Math.random()<0.65;
-    // v5 场景专属机关（按段所在位置的 scene 决定）
+    // v5/v6 场景专属机关（按段所在位置的 scene 决定）
     const hs = sceneAtX(seg.x);
     if (seg.w>=70){
       const hx = seg.x + seg.w*rnd(0.3,0.72);
@@ -433,22 +444,36 @@ function generateAhead(targetX){
         hazardList.push({kind:'laser', x:hx, y:seg.y, t:rnd(0,LASER_CYCLE), prev:0});
       } else if (hs===6 && Math.random()<0.5){
         hazardList.push({kind:'vent', x:hx, y:seg.y, t:rnd(0,6.3), cd:0});
+      } else if (hs===8 && Math.random()<0.45){
+        hazardList.push({kind:'sand', x:hx, y:seg.y, w:34, t:rnd(0,6.3)});           // v6 沙漠流沙
+      } else if (hs===9 && Math.random()<0.45){
+        hazardList.push({kind:'bamboo', x:hx, y:seg.y, t:rnd(0,4.2)});               // v6 竹林摇摆竹竿
+      } else if (hs===3 && Math.random()<0.4){
+        hazardList.push({kind:'tornado', x:seg.x+seg.w+16, y:seg.y, t:rnd(0,6.3)});  // v6 白昼龙卷风（自右向左漂移）
       }
     }
-    // v3 精英 Boss：按里程碑距离落到足够宽的平台段上（v5 起有地面/飞行两种变体）
+    // v3/v5/v6 精英 Boss：按里程碑距离落到足够宽的平台段上，四种变体
     const bossX = nextBossM * 20; // 1m = 20px
     if (bossX < seg.x){
       nextBossM += BOSS_INTERVAL_M; // 已错过则顺延到下一个里程碑
     } else if (seg.w >= SEG_W_MIN && bossX < seg.x + seg.w - 34){
       bossNum++;
-      const fly = bossNum>=2 && Math.random()<0.5; // 首个必为地面精英，之后一半概率飞行
+      let variant = 'classic';
+      if (bossNum>=2){ // 首个必为经典地面精英，之后掷骰变体：40% 飞行 / 30% 分裂 / 30% 护盾
+        const r = Math.random();
+        if (r<0.4) variant='fly';
+        else if (r<0.7) variant='split';
+        else variant='shield';
+      }
+      const fly = variant==='fly';
       enemyList.push({
         x:bossX-13, y:fly?seg.y-58:seg.y-24, w:26, h:fly?20:24, vx:fly?-55:-30,
         minX:seg.x+6, maxX:seg.x+seg.w-32, dead:false, ph:rnd(0,6.3),
         elite:true, hp:BOSS_HP, hitT:0,
-        fly:fly, baseY:seg.y-58, groundY:seg.y
+        fly:fly, baseY:seg.y-58, groundY:seg.y,
+        variant:variant, shield:variant==='shield'
       });
-      toast(fly?'⚠ 飞行精英出现！':'⚠ 精英史莱姆出现！', C.slime);
+      toast(variant==='fly'?'⚠ 飞行精英出现！':variant==='split'?'⚠ 分裂精英出现！':variant==='shield'?'⚠ 护盾精英出现！':'⚠ 精英史莱姆出现！', C.slime);
       SFX.bossWarn();
       nextBossM += BOSS_INTERVAL_M;
     }
@@ -619,6 +644,16 @@ function update(dt){
   }
   if (player.vx < runSpeed && player.invuln<=0) player.vx = Math.min(runSpeed, player.vx + 900*dt);
   if (player.vx > runSpeed && dashT<=0) player.vx = Math.max(runSpeed, player.vx - 600*dt);
+  // v6 流沙：站在沙漠流沙上会被拖慢
+  if (player.onGround){
+    for (const h of hazardList){
+      if (h.kind==='sand' && player.x+player.w > h.x && player.x < h.x+h.w && Math.abs(player.y+player.h - h.y) < 4){
+        runSpeed *= SAND_SLOW;
+        if (Math.random()<0.3) particles.push({x:player.x+rnd(0,12), y:player.y+13, vx:-50, vy:rnd(-30,-10), life:0.4, max:0.4, color:'#c8a06a', size:2});
+        break;
+      }
+    }
+  }
 
   // 跳跃缓冲 / 土狼时间
   if (jumpBuf>0) jumpBuf-=dt;
@@ -663,6 +698,15 @@ function update(dt){
           if (fromAbove){ player.vy=STOMP_V; player.jumps=1; }
           continue;
         }
+        // v6 护盾精英：护盾格挡一次攻击（踩/冲刺撞都先碎盾）
+        if (e.shield){
+          e.shield=false; e.hitT=BOSS_HIT_LOCK;
+          if (fromAbove){ player.vy=STOMP_V; player.jumps=1; }
+          burst(e.x+e.w/2, e.y+e.h/2, C.shield, 20, 200);
+          SFX.shieldBreak();
+          toast('护盾击碎！', C.shield);
+          continue;
+        }
         e.hp--; e.hitT=BOSS_HIT_LOCK; stompsTotal++;
         if (fromAbove){
           player.vy=STOMP_V; player.jumps=1;
@@ -672,6 +716,19 @@ function update(dt){
         burst(e.x+e.w/2,e.y+4,C.slime,16,180);
         if (e.hp<=0){
           e.dead=true; bossKills++; addScore(200);
+          if (e.variant!=='classic') variantKills++;
+          // v6 分裂精英：死亡时裂成两只小史莱姆
+          if (e.variant==='split'){
+            SFX.split();
+            for (const dx of [-10,10]){
+              enemyList.push({
+                x:e.x+e.w/2+dx, y:e.y+6, w:12, h:11, vx:dx>0?95:-95,
+                minX:e.minX, maxX:e.maxX+26, dead:false, ph:rnd(0,6.3),
+                elite:false, hp:1, hitT:0, graceT:0.5
+              });
+            }
+            toast('分裂成两只小史莱姆！', C.slime);
+          }
           floater(e.x+e.w/2,e.y-16,'BOSS +200',C.coin);
           burst(e.x+e.w/2,e.y+12,C.coin,36,220);
           shake=14; SFX.bossDown();
@@ -721,7 +778,7 @@ function update(dt){
       const st = (h.t % LASER_CYCLE) >= LASER_OFF ? 1 : 0;
       if (st!==h.prev){ if (st===1) SFX.laser(); h.prev = st; }
       if (st===1 && hit(player, {x:h.x-3, y:h.y-LASER_H, w:6, h:LASER_H})) hurt('enemy');
-    } else { // vent 气泡喷口：托举上升
+    } else if (h.kind==='vent'){ // 气泡喷口：托举上升
       if (h.cd>0) h.cd-=dt;
       const pcx = player.x+player.w/2;
       if (Math.abs(pcx-h.x)<16 && player.y+player.h > h.y-VENT_H && player.y+player.h <= h.y+2){
@@ -732,11 +789,28 @@ function update(dt){
         }
       }
       if (Math.random()<0.25) particles.push({x:h.x+rnd(-5,5), y:h.y-rnd(4,40), vx:rnd(-6,6), vy:rnd(-55,-30), life:0.8, max:0.8, color:'#7fe8d8', size:2});
+    } else if (h.kind==='sand'){
+      // 流沙的减速判定在 runSpeed 段统一处理，这里只冒沙尘
+      if (Math.random()<0.2) particles.push({x:h.x+rnd(0,h.w), y:h.y-rnd(0,4), vx:rnd(-8,8), vy:rnd(-25,-8), life:0.5, max:0.5, color:'#c8a06a', size:2});
+    } else if (h.kind==='bamboo'){
+      // 摇摆竹竿：底端固定在地面，竿身横向摆扫（近似判定盒取竿身中点水平偏移）
+      const a = Math.sin(h.t*BAMBOO_SPD)*BAMBOO_AMP;
+      const midX = h.x + Math.sin(a)*BAMBOO_H*0.5;
+      if (hit(player, {x:midX-4, y:h.y-BAMBOO_H, w:8, h:BAMBOO_H})) hurt('enemy');
+    } else if (h.kind==='tornado'){
+      // 龙卷风：自右向左漂移，卷到玩家会将其吸起（不扣血，但可能把你抛向缺口）
+      h.x += TORNADO_VX*dt;
+      const pcx = player.x+player.w/2;
+      if (Math.abs(pcx-h.x)<20 && player.y+player.h > h.y-TORNADO_H && player.y+player.h <= h.y+4){
+        player.vy = Math.max(player.vy - TORNADO_LIFT*dt, -240);
+        if (Math.random()<0.4) particles.push({x:h.x+rnd(-8,8), y:h.y-rnd(0,TORNADO_H), vx:rnd(-40,40), vy:rnd(-90,-40), life:0.4, max:0.4, color:'#dceeff', size:2});
+      }
     }
   }
   checkAchv('ice_rider', iceTime>=8);
   checkAchv('lava_dancer', geysersDodged>=6);
   checkAchv('bubble_rider', bubbleRides>=12);
+  checkAchv('variant_slayer', variantKills>=3);
 
   // 金币（磁铁：范围内自动吸附，幽灵皮肤扩大范围）
   for (const c of coinList){
@@ -795,7 +869,7 @@ function update(dt){
   const targetScene = Math.floor(curM / SCENE_M) % SCENES.length;
   if (targetScene!==sceneIdx){
     scenePrev=sceneIdx; sceneIdx=targetScene; sceneBlend=0;
-    const sceneHint=['','','','','冰面会加速！','小心喷火柱！','气泡会托你上升！','激光有节奏！','',''];
+    const sceneHint=['','','','小心龙卷风！','冰面会加速！','小心喷火柱！','气泡会托你上升！','激光有节奏！','流沙会拖慢脚步！','竹竿会扫人！'];
     toast('场景 · '+SCENES[sceneIdx].name + (sceneHint[sceneIdx]?'（'+sceneHint[sceneIdx]+'）':''), C.star);
     SFX.scene();
   }
@@ -935,6 +1009,40 @@ function render(){
       ctx.fillStyle='#2a7a78'; ctx.fillRect(hx-5, hy-2, 10, 2);
     }
   }
+  // v6 新增机关渲染（流沙 / 摇摆竹竿 / 龙卷风）
+  for (const h of hazardList){
+    const hx=px(h.x), hy=px(h.y);
+    if (h.kind==='sand'){
+      ctx.fillStyle='#8a6a3c'; ctx.fillRect(hx, hy-3, h.w, 4);          // 深色沙面
+      ctx.fillStyle='#a8825a';
+      for (let i=0;i<4;i++){ // 波纹点随时间游走
+        const rx = hx + ((i*9 + h.t*14) % h.w);
+        ctx.fillRect(rx, hy-2+((i+h.t*3|0)%2), 3, 2);
+      }
+    } else if (h.kind==='bamboo'){
+      const a = Math.sin(h.t*BAMBOO_SPD)*BAMBOO_AMP;
+      ctx.fillStyle='#1a3020'; ctx.fillRect(hx-4, hy-4, 8, 5);          // 底部竹节桩
+      ctx.fillStyle='#3f7d3f';                                          // 竿身分段画
+      for (let s=0; s<BAMBOO_H; s+=5){
+        const sx = hx + Math.sin(a)*s;
+        ctx.fillRect(sx-2, hy-Math.cos(a)*s-4, 4, 5);
+      }
+      const tx = hx + Math.sin(a)*BAMBOO_H;                             // 竿梢竹叶
+      ctx.fillStyle='#6fbf5f';
+      ctx.fillRect(tx-5, hy-Math.cos(a)*BAMBOO_H-6, 4, 3);
+      ctx.fillRect(tx+2, hy-Math.cos(a)*BAMBOO_H-5, 4, 3);
+    } else if (h.kind==='tornado'){
+      for (let i=0;i<6;i++){ // 漏斗状旋涡：越往上越宽，横向摆动
+        const yy = hy - (i+1)*12;
+        const wR = 5 + i*4;
+        const ox = Math.sin(h.t*8 + i*1.1)*5;
+        ctx.globalAlpha = 0.30 - i*0.02;
+        ctx.fillStyle='#e8f4ff';
+        ctx.fillRect(hx+ox-wR/2, yy, wR, 3);
+      }
+      ctx.globalAlpha=1;
+    }
+  }
 
   // 金币
   for (const c of coinList){
@@ -1039,10 +1147,27 @@ function drawBoss(e){
   // 身体
   ctx.fillStyle = flashHit?C.white:C.slimeDark; ctx.fillRect(ex+1,ey+7,e.w-2,e.h-7);
   ctx.fillStyle = flashHit?C.white:C.slime;     ctx.fillRect(ex+3,ey+4,e.w-6,e.h-10);
-  // 王冠
-  ctx.fillStyle=C.coin;
-  ctx.fillRect(ex+4,ey-6,5,5); ctx.fillRect(ex+11,ey-6,5,5); ctx.fillRect(ex+18,ey-6,5,5);
-  ctx.fillRect(ex+4,ey-2,e.w-8,2);
+  // v6 分裂精英：身体中缝 + 双王冠，暗示一分为二
+  if (e.variant==='split'){
+    ctx.fillStyle = flashHit?C.white:C.slimeDark;
+    ctx.fillRect(ex+e.w/2-1, ey+5, 2, e.h-7);
+    ctx.fillStyle=C.coin;
+    ctx.fillRect(ex+2, ey-6, 4, 4); ctx.fillRect(ex+e.w-6, ey-6, 4, 4);
+    ctx.fillRect(ex+2, ey-3, 4, 2); ctx.fillRect(ex+e.w-6, ey-3, 4, 2);
+  }
+  // 王冠（分裂版已画双冠，这里只画其余变体）
+  if (e.variant!=='split'){
+    ctx.fillStyle=C.coin;
+    ctx.fillRect(ex+4,ey-6,5,5); ctx.fillRect(ex+11,ey-6,5,5); ctx.fillRect(ex+18,ey-6,5,5);
+    ctx.fillRect(ex+4,ey-2,e.w-8,2);
+  }
+  // v6 护盾精英：体表淡青色护盾泡（未碎时）
+  if (e.shield){
+    ctx.globalAlpha = 0.35 + 0.2*Math.sin(e.ph*1.5);
+    ctx.strokeStyle = C.shield; ctx.lineWidth = 2;
+    ctx.strokeRect(ex-4, ey-2, e.w+8, e.h+6);
+    ctx.globalAlpha=1; ctx.lineWidth=1;
+  }
   // 大眼睛
   ctx.fillStyle=C.white;    ctx.fillRect(ex+6,ey+8,5,4); ctx.fillRect(ex+15,ey+8,5,4);
   ctx.fillStyle=C.slimeDark;ctx.fillRect(ex+8,ey+9,3,3); ctx.fillRect(ex+17,ey+9,3,3);
@@ -1182,7 +1307,7 @@ function drawHUD(pal){
     ctx.fillStyle='rgba(20,12,32,.8)'; ctx.fillRect(bx-2,6,bw+4,8);
     ctx.fillStyle=C.slimeDark; ctx.fillRect(bx,8,bw,4);
     ctx.fillStyle=C.slime; ctx.fillRect(bx,8,bw*clamp(e.hp/BOSS_HP,0,1),4);
-    text(e.fly?'FLY':'ELITE', bx+bw/2, 6, 7, C.white, 'center');
+    text(e.fly?'FLY':e.variant==='split'?'SPLIT':e.shield?'SHIELD':'ELITE', bx+bw/2, 6, 7, C.white, 'center');
     break;
   }
 }
@@ -1229,7 +1354,7 @@ function drawMenu(){
   ctx.globalAlpha=a; text('▶ 开始游戏 ◀', W/2, 202, 12, C.player, 'center'); ctx.globalAlpha=1;
   text('HI '+best+'    成就 '+achvCount()+'/'+Object.keys(ACHV_NAMES).length, W/2, 222, 8, C.grass, 'center');
   text('空格/点击跳跃 · P暂停 · M静音', W/2, 236, 7, C.star, 'center');
-  text('机关：冰面加速 · 火柱 · 气泡 · 激光', W/2, 250, 7, '#9a8ab0', 'center');
+  text('机关：冰面 · 火柱 · 气泡 · 激光 · 流沙 · 竹竿 · 龙卷风', W/2, 250, 7, '#9a8ab0', 'center');
 }
 function drawPause(){
   ctx.fillStyle='rgba(13,11,24,.55)'; ctx.fillRect(0,0,W,H);
