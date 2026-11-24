@@ -106,6 +106,14 @@ const BAMBOO_SPD   = 1.6;   // 竹竿摆动角速度
 const TORNADO_VX   = -28;   // 龙卷风向左漂移速度 px/s
 const TORNADO_H    = 80;    // 龙卷风吸力有效高度
 const TORNADO_LIFT = 1300;  // 龙卷风吸力加速度 px/s²
+/* ---------------- v7 终局大 Boss / 新道具 ---------------- */
+const MEGA_FIRST_M  = 1000; // 首个终局大 Boss 出现米数
+const MEGA_INTERVAL_M = 1000; // 终局大 Boss 出现间隔（米）
+const MEGA_HP   = 10;       // 大 Boss 血量（多阶段）
+const MEGA_LOCK = 0.8;      // 大 Boss 受击锁定秒数
+const FREEZE_TIME = 3;      // 时停怀表持续秒数
+const SPRING_TIME = 10;     // 弹簧鞋持续秒数
+const SPRING_MULT = 1.3;    // 弹簧鞋跳跃高度倍率
 /* ---------------------------------------------------------------- */
 
 /* ---------------- 调色板（基础色，角色/金币/道具固定用） ---------------- */
@@ -259,7 +267,11 @@ const SFX = {
   laser(){ tone(1400,0.09,'sawtooth',0.09,280); },
   // v6 音效
   bossShieldBreak(){ tone(500,0.12,'square',0.15,120); tone(900,0.10,'triangle',0.12,null,0.06); },
-  split(){ tone(300,0.12,'sawtooth',0.14,60); tone(450,0.10,'square',0.10,null,0.08); }
+  split(){ tone(300,0.12,'sawtooth',0.14,60); tone(450,0.10,'square',0.10,null,0.08); },
+  // v7 音效
+  freeze(){ tone(1300,0.28,'sine',0.13,-700); tone(700,0.35,'sine',0.10,-400,0.05); },
+  spring(){ tone(280,0.10,'square',0.13,140); tone(620,0.14,'square',0.10,null,0.05); },
+  phoenix(){ tone(420,0.30,'sawtooth',0.15,650); tone(840,0.35,'sine',0.14,420,0.10); }
 };
 // 轻量 8-bit 背景旋律
 const MELODY = [0,4,7,12,7,4,0,4, 5,9,12,17,12,9,5,9, 2,7,9,14,9,7,2,7, 0,4,7,12,7,4,0,-1];
@@ -293,7 +305,9 @@ let skinKey = 'hero';
 let nextBossM, bossKills, nextMilestoneM, milestonesRun, hurtCount;
 let sceneIdx, scenePrev, sceneBlend;
 /* v5 新增状态 */
-let hazardList, iceTime, geysersDodged, bubbleRides, bossNum;
+let hazardList, iceTime, geysersDodged, bubbleRides, bossNum, variantKills;
+/* v7 新增状态 */
+let freezeT, springT, phoenixOn, nextMegaM, powersUsed;
 
 function loadJSON(key, def){
   try { const v = JSON.parse(localStorage.getItem(key)); return v || def; }
@@ -321,7 +335,8 @@ const ACHV_NAMES = {
   first_coin:'金币新手', slayer:'史莱姆克星', combo10:'连击大师',
   dist500:'五百米', dist1000:'千米跑者', rich:'富甲一方', hardcore:'硬核狂奔',
   boss_slayer:'巨人杀手', marathon:'里程达人', nohit:'毫发无伤',
-  ice_rider:'冰上飞驰', lava_dancer:'火焰舞者', bubble_rider:'气泡骑士'
+  ice_rider:'冰上飞驰', lava_dancer:'火焰舞者', bubble_rider:'气泡骑士',
+  variant_slayer:'变体猎人', mega_slayer:'终局猎手', all_powers:'道具收藏家'
 };
 function achvCount(){ return Object.keys(ACHV_NAMES).filter(k=>achv[k]).length; }
 function checkAchv(id, cond){
@@ -354,7 +369,8 @@ function newGame(){
   // v3 重置
   nextBossM=BOSS_FIRST_M; bossNum=0; bossKills=0; nextMilestoneM=MILESTONE_M; milestonesRun=0; hurtCount=0;
   sceneIdx=0; scenePrev=0; sceneBlend=1;
-  hazardList=[]; iceTime=0; geysersDodged=0; bubbleRides=0; // v5 机关状态
+  hazardList=[]; iceTime=0; geysersDodged=0; bubbleRides=0; bossNum=0; variantKills=0; // v5/v6 机关状态
+  freezeT=0; springT=0; phoenixOn=false; nextMegaM=MEGA_FIRST_M; powersUsed={}; // v7 状态
   initEnvSeeds(); // v4 环境粒子种子
   // 起始安全大平台
   segments.push({x:0,y:curGround,w:260});
@@ -406,12 +422,12 @@ function spawnOn(seg, safe){
       coinList.push({ x:startX+i*18, y:baseY - Math.sin(i/(n-1||1)*Math.PI)*12, got:false, ph:rnd(0,6.3) });
     }
   }
-  // 道具：护盾 / 磁铁 / 冲刺
+  // 道具：护盾 / 磁铁 / 冲刺（老三样权重高）+ v7 时停 / 弹簧鞋 / 凤凰羽
   if (!safe && seg.w>90 && Math.random() < POWER_RATE){
-    const types = ['shield','magnet','dash'];
+    const types = ['shield','magnet','dash','shield','magnet','dash','stop','spring','phoenix'];
     powerList.push({
       x: seg.x + seg.w*rnd(0.35,0.65), y: seg.y - 24,
-      type: types[rndi(0,2)], ph: rnd(0,6.3), got:false
+      type: types[rndi(0,types.length-1)], ph: rnd(0,6.3), got:false
     });
   }
   // 普通怪物
@@ -452,11 +468,28 @@ function generateAhead(targetX){
         hazardList.push({kind:'tornado', x:seg.x+seg.w+16, y:seg.y, t:rnd(0,6.3)});  // v6 白昼龙卷风（自右向左漂移）
       }
     }
+    // v7 终局大 Boss：每 MEGA_INTERVAL_M 米一次，需要足够宽的平台段
+    const megaX = nextMegaM * 20;
+    let megaSpawned = false;
+    if (megaX < seg.x){
+      nextMegaM += MEGA_INTERVAL_M; // 已错过则顺延
+    } else if (seg.w >= 130 && megaX < seg.x + seg.w - 50){
+      enemyList.push({
+        x:megaX-22, y:seg.y-40, w:44, h:40, vx:-38,
+        minX:seg.x+6, maxX:seg.x+seg.w-50, dead:false, ph:0,
+        elite:true, mega:true, hp:MEGA_HP, hitT:0, summonT:2.5,
+        variant:'classic', groundY:seg.y
+      });
+      toast('💀 终局大 Boss 出现！', C.heart);
+      SFX.bossWarn();
+      nextMegaM += MEGA_INTERVAL_M;
+      megaSpawned = true;
+    }
     // v3/v5/v6 精英 Boss：按里程碑距离落到足够宽的平台段上，四种变体
     const bossX = nextBossM * 20; // 1m = 20px
     if (bossX < seg.x){
       nextBossM += BOSS_INTERVAL_M; // 已错过则顺延到下一个里程碑
-    } else if (seg.w >= SEG_W_MIN && bossX < seg.x + seg.w - 34){
+    } else if (!megaSpawned && seg.w >= SEG_W_MIN && bossX < seg.x + seg.w - 34){
       bossNum++;
       let variant = 'classic';
       if (bossNum>=2){ // 首个必为经典地面精英，之后掷骰变体：40% 飞行 / 30% 分裂 / 30% 护盾
@@ -585,8 +618,16 @@ function hurt(reason){
   if (dashT>0 && reason==='enemy') return;
   lives--; hurtCount++; combo=0; comboTimer=0; shake=9; flash=0.25; slowmo=0.08;
   SFX.hurt(); burst(player.x+player.w/2, player.y+player.h/2, C.heart, 14, 160);
+  // v7 凤凰羽：生命归零时原地复活一次
+  let revived = false;
+  if (lives<=0 && phoenixOn){
+    phoenixOn=false; lives=1; revived=true;
+    flash=0.45; shake=14; SFX.phoenix();
+    burst(player.x+player.w/2, player.y+player.h/2, '#ffb347', 36, 260);
+    toast('🪶 凤凰羽发动！原地复活', '#ffb347');
+  }
   if (lives<=0){ gameOver(); return; }
-  player.invuln = invulnTime();
+  player.invuln = revived ? 2.2 : invulnTime();
   if (reason==='fall'){
     player.x = lastSafe.x; player.y = lastSafe.y - player.h - 4;
     player.px = player.y; player.vy=0; player.vx=runSpeed; player.onGround=false; player.jumps=0;
@@ -610,11 +651,12 @@ function gameOver(){
   SFX.die(); SFX.over(); shake=12;
 }
 function jumpNow(){
+  const sk = springT>0 ? SPRING_MULT : 1; // v7 弹簧鞋：跳跃高度 ×1.3
   if (player.onGround || player.coyote>0){
-    player.vy = JUMP_V; player.onGround=false; player.coyote=0; player.jumps=1;
+    player.vy = JUMP_V*sk; player.onGround=false; player.coyote=0; player.jumps=1;
     SFX.jump(); burst(player.x+6, player.y+player.h, SCENES[sceneIdx].grass, 5, 70);
   } else if (player.jumps<2){
-    player.vy = JUMP2_V; player.jumps=2;
+    player.vy = JUMP2_V*sk; player.jumps=2;
     SFX.jump2(); burst(player.x+6, player.y+player.h/2, C.coin, 8, 110);
   }
   jumpBuf=0;
@@ -680,12 +722,32 @@ function update(dt){
     }
   }
 
-  // 怪物：巡逻 + 碰撞（含 v3 精英 Boss / v5 飞行精英）
+  // 怪物：巡逻 + 碰撞（含 v3-v6 精英变体 / v7 终局大 Boss）
+  // v7 时停：freezeT>0 时怪物与机关全部静止（金币/道具仍可拾取）
+  if (freezeT<=0){
   for (const e of enemyList){
     if (e.dead) continue;
     e.x += e.vx*dt; e.ph += dt*6;
     if (e.hitT>0) e.hitT-=dt;
+    if (e.graceT>0){ e.graceT-=dt; continue; } // v6/v7 分裂小怪出生保护（0.5s 内不判定碰撞）
     if (e.fly) e.y = e.baseY + Math.sin(e.ph*0.55)*12; // v5 飞行精英上下浮动
+    // v7 终局大 Boss：半血后加速，并周期性召唤小史莱姆增援
+    if (e.mega){
+      const sp = e.hp<=MEGA_HP/2 ? 65 : 38;
+      e.vx = (e.vx<0?-1:1)*sp;
+      if (e.hp<=MEGA_HP/2){
+        e.summonT -= dt;
+        if (e.summonT<=0){
+          e.summonT = 3.2;
+          enemyList.push({
+            x:e.x+e.w/2, y:e.groundY-12, w:14, h:12, vx:(Math.random()<0.5?-32:32),
+            minX:e.minX, maxX:e.maxX+14, dead:false, ph:rnd(0,6.3),
+            elite:false, hp:1, hitT:0, graceT:0.5
+          });
+          floater(e.x+e.w/2, e.y-10, '增援！', C.heart);
+        }
+      }
+    }
     if (e.x<e.minX){ e.x=e.minX; e.vx=Math.abs(e.vx); }
     if (e.x>e.maxX){ e.x=e.maxX; e.vx=-Math.abs(e.vx); }
     if (!hit(player,e)) continue;
@@ -707,14 +769,25 @@ function update(dt){
           toast('护盾击碎！', C.shield);
           continue;
         }
-        e.hp--; e.hitT=BOSS_HIT_LOCK; stompsTotal++;
+        e.hp--; e.hitT=e.mega?MEGA_LOCK:BOSS_HIT_LOCK; stompsTotal++;
         if (fromAbove){
-          player.vy=STOMP_V; player.jumps=1;
+          player.vy=STOMP_V*(e.mega?1.15:1); player.jumps=1;
           if (e.fly) e.baseY = Math.min(e.groundY-26, e.baseY+9); // v5 飞行精英被踩会下压
         }
-        shake=8; SFX.bossHit();
-        burst(e.x+e.w/2,e.y+4,C.slime,16,180);
+        shake=e.mega?12:8; SFX.bossHit();
+        burst(e.x+e.w/2,e.y+4,C.slime,e.mega?24:16,e.mega?220:180);
         if (e.hp<=0){
+          if (e.mega){
+            // v7 大 Boss 击破：+500 双道具掉落 + 大特效
+            e.dead=true; bossKills++; addScore(500);
+            floater(e.x+e.w/2,e.y-20,'MEGA +500',C.coin);
+            burst(e.x+e.w/2,e.y+16,C.coin,48,260);
+            shake=20; slowmo=0.25; SFX.bossDown();
+            toast('💀 大 Boss 击破！+500', C.coin);
+            const dropTypes = ['shield','magnet','dash','stop','spring','phoenix'];
+            powerList.push({x:e.x+e.w/2-8, y:e.y-16, type:dropTypes[rndi(0,5)], ph:0, got:false});
+            powerList.push({x:e.x+e.w/2+8, y:e.y-16, type:dropTypes[rndi(0,5)], ph:0, got:false});
+          } else {
           e.dead=true; bossKills++; addScore(200);
           if (e.variant!=='classic') variantKills++;
           // v6 分裂精英：死亡时裂成两只小史莱姆
@@ -738,10 +811,16 @@ function update(dt){
             x:e.x+e.w/2, y:e.y-16,
             type:['shield','magnet','dash'][rndi(0,2)], ph:0, got:false
           });
+          }
           checkAchv('boss_slayer', true);
         } else {
-          addScore(40);
-          floater(e.x+e.w/2,e.y-8,'剩余 '+e.hp+' HP',C.slime);
+          if (e.mega){
+            addScore(60);
+            floater(e.x+e.w/2,e.y-8,'剩余 '+e.hp+' HP',C.heart);
+          } else {
+            addScore(40);
+            floater(e.x+e.w/2,e.y-8,'剩余 '+e.hp+' HP',C.slime);
+          }
         }
       } else hurt('enemy');
     } else {
@@ -807,6 +886,7 @@ function update(dt){
       }
     }
   }
+  } // v7 时停守卫结束（freezeT<=0）
   checkAchv('ice_rider', iceTime>=8);
   checkAchv('lava_dancer', geysersDodged>=6);
   checkAchv('bubble_rider', bubbleRides>=12);
@@ -836,11 +916,19 @@ function update(dt){
     p.ph += dt*4;
     if (hit(player,{x:p.x-8,y:p.y-8,w:16,h:16})){
       p.got=true; SFX.power();
-      const col = p.type==='shield'?C.shield:p.type==='magnet'?C.magnet:C.dash;
+      const col = p.type==='shield'?C.shield:p.type==='magnet'?C.magnet
+                : p.type==='dash'?C.dash
+                : p.type==='stop'?'#7fd4ff':p.type==='spring'?'#9dff6b':'#ffb347';
       burst(p.x,p.y,col,14,130);
+      // v7 道具收藏家：单局集齐 6 种道具
+      powersUsed[p.type]=true;
+      checkAchv('all_powers', Object.keys(powersUsed).length>=6);
       if (p.type==='shield'){ shieldOn=true; toast('护盾就位 · 抵挡一次伤害', C.shield); }
       else if (p.type==='magnet'){ magnetT=MAGNET_TIME; toast('磁铁 8 秒 · 自动吸金币', C.magnet); }
-      else { dashT=DASH_TIME; toast('冲刺 5 秒 · 无敌撞怪', C.dash); }
+      else if (p.type==='dash'){ dashT=DASH_TIME; toast('冲刺 5 秒 · 无敌撞怪', C.dash); }
+      else if (p.type==='stop'){ freezeT=FREEZE_TIME; SFX.freeze(); toast('⏱ 时停 3 秒 · 世界静止', '#7fd4ff'); }
+      else if (p.type==='spring'){ springT=SPRING_TIME; SFX.spring(); toast('👟 弹簧鞋 10 秒 · 跳更高', '#9dff6b'); }
+      else { phoenixOn=true; SFX.phoenix(); toast('🪶 凤凰羽 · 死亡时原地复活一次', '#ffb347'); }
     }
   }
 
@@ -879,6 +967,8 @@ function update(dt){
   if (comboTimer>0){ comboTimer-=dt; if(comboTimer<=0) combo=0; }
   if (magnetT>0) magnetT-=dt;
   if (dashT>0) dashT-=dt;
+  if (freezeT>0) freezeT-=dt;
+  if (springT>0) springT-=dt;
   if (combo>maxComboRun) maxComboRun=combo;
   checkAchv('combo10', maxComboRun>=10);
 
@@ -1083,6 +1173,19 @@ function render(){
 
   // 玩家（护盾光环 / 冲刺拖尾 / v3 皮肤配色）
   if (!player.dead){
+    // v7 弹簧鞋：脚下绿色弹簧垫
+    if (springT>0){
+      ctx.fillStyle='#9dff6b';
+      ctx.fillRect(px(player.x),px(player.y+player.h-2),5,3);
+      ctx.fillRect(px(player.x+7),px(player.y+player.h-2),5,3);
+    }
+    // v7 凤凰羽：待命时周身橙色羽光
+    if (phoenixOn){
+      ctx.globalAlpha=0.35+0.25*Math.sin(tStars*4);
+      ctx.strokeStyle='#ffb347';
+      ctx.strokeRect(px(player.x-3),px(player.y-3),player.w+6,player.h+6);
+      ctx.globalAlpha=1;
+    }
     if (dashT>0){
       ctx.globalAlpha=0.4; ctx.fillStyle=C.dash;
       for (let i=1;i<=3;i++) ctx.fillRect(px(player.x-i*6),px(player.y+2),10,12);
@@ -1126,11 +1229,14 @@ function render(){
   if (flash>0){ ctx.globalAlpha=clamp(flash*2,0,0.5); ctx.fillStyle=C.white; ctx.fillRect(0,0,W,H); ctx.globalAlpha=1; }
 
   // 状态遮罩
+  // v7 时停滤镜：世界静止时画面泛蓝
+  if (freezeT>0){ ctx.fillStyle='rgba(140,215,255,.13)'; ctx.fillRect(0,0,W,H); }
   if (state===State.MENU) drawMenu();
   else if (state===State.PAUSE) drawPause();
   else if (state===State.OVER) drawOver();
 }
 function drawBoss(e){
+  if (e.mega){ drawMega(e); return; } // v7 终局大 Boss 专属绘制
   const bounce = Math.abs(Math.sin(e.ph))*1.5;
   const ex=px(e.x), ey=px(e.y-bounce);
   const flashHit = e.hitT>0 && Math.floor(e.hitT*16)%2===0;
@@ -1174,6 +1280,35 @@ function drawBoss(e){
   // 头顶血条
   ctx.fillStyle='#3a2030'; ctx.fillRect(ex,ey-12,e.w,3);
   ctx.fillStyle=C.slime;   ctx.fillRect(ex,ey-12,e.w*clamp(e.hp/BOSS_HP,0,1),3);
+}
+// v7 终局大 Boss：大身躯 + 尖刺 + 大王冠 + 红色怒目，半血进入狂暴（红光轮廓）
+function drawMega(e){
+  const bounce = Math.abs(Math.sin(e.ph))*2;
+  const ex=px(e.x), ey=px(e.y-bounce);
+  const flashHit = e.hitT>0 && Math.floor(e.hitT*16)%2===0;
+  // 身体
+  ctx.fillStyle = flashHit?C.white:C.slimeDark; ctx.fillRect(ex+2,ey+9,e.w-4,e.h-9);
+  ctx.fillStyle = flashHit?C.white:C.slime;     ctx.fillRect(ex+5,ey+5,e.w-10,e.h-13);
+  // 背部尖刺
+  ctx.fillStyle = flashHit?C.white:C.slimeDark;
+  for (let i=0;i<5;i++) ctx.fillRect(ex+3+i*9, ey+1, 5, 6);
+  // 大王冠
+  ctx.fillStyle=C.coin;
+  ctx.fillRect(ex+8,ey-10,7,6); ctx.fillRect(ex+19,ey-12,8,8); ctx.fillRect(ex+30,ey-10,7,6);
+  ctx.fillRect(ex+8,ey-4,e.w-16,3);
+  // 红色怒目
+  ctx.fillStyle='#ff4a5e'; ctx.fillRect(ex+10,ey+14,7,5); ctx.fillRect(ex+27,ey+14,7,5);
+  ctx.fillStyle='#1a0c14'; ctx.fillRect(ex+12,ey+15,3,3); ctx.fillRect(ex+29,ey+15,3,3);
+  // 阶段 2 狂暴红光轮廓
+  if (e.hp<=MEGA_HP/2){
+    ctx.globalAlpha=0.4+0.2*Math.sin(e.ph*2);
+    ctx.strokeStyle=C.heart; ctx.lineWidth=2;
+    ctx.strokeRect(ex-4,ey-4,e.w+8,e.h+8);
+    ctx.globalAlpha=1; ctx.lineWidth=1;
+  }
+  // 头顶血条
+  ctx.fillStyle='#3a2030'; ctx.fillRect(ex,ey-14,e.w,3);
+  ctx.fillStyle=C.heart;   ctx.fillRect(ex,ey-14,e.w*clamp(e.hp/MEGA_HP,0,1),3);
 }
 function drawMountains(par,color,base,amp,freq){
   ctx.fillStyle=color; ctx.beginPath(); ctx.moveTo(0,H);
@@ -1292,6 +1427,20 @@ function drawHUD(pal){
     ctx.fillStyle=C.dash; ctx.fillRect(W-52,py,40*clamp(dashT/DASH_TIME,0,1),3);
     text('DASH', W-12, py-3, 8, C.dash, 'right'); py+=14;
   }
+  // v7 新道具状态条
+  if (freezeT>0){
+    ctx.fillStyle='#5a4058'; ctx.fillRect(W-52,py,40,3);
+    ctx.fillStyle='#7fd4ff'; ctx.fillRect(W-52,py,40*clamp(freezeT/FREEZE_TIME,0,1),3);
+    text('STOP', W-12, py-3, 8, '#7fd4ff', 'right'); py+=14;
+  }
+  if (springT>0){
+    ctx.fillStyle='#5a4058'; ctx.fillRect(W-52,py,40,3);
+    ctx.fillStyle='#9dff6b'; ctx.fillRect(W-52,py,40*clamp(springT/SPRING_TIME,0,1),3);
+    text('SPRING', W-12, py-3, 8, '#9dff6b', 'right'); py+=14;
+  }
+  if (phoenixOn){
+    text('🪶', W-16, py-3, 10, '#ffb347', 'right'); py+=14;
+  }
   // Combo
   if (combo>=2){
     const m=comboMult();
@@ -1299,15 +1448,15 @@ function drawHUD(pal){
     ctx.fillStyle='#5a4058'; ctx.fillRect(W/2-30,32,60,3);
     ctx.fillStyle=C.coin; ctx.fillRect(W/2-30,32,60*clamp(comboTimer/2.2,0,1),3);
   }
-  // v3 Boss 血条（屏幕顶部）
+  // v3/v7 Boss 血条（屏幕顶部）
   for (const e of enemyList){
     if (!e.elite || e.dead) continue;
     if (e.x+e.w < cam.x || e.x > cam.x+W) continue;
     const bx=px(e.x-cam.x), bw=e.w;
     ctx.fillStyle='rgba(20,12,32,.8)'; ctx.fillRect(bx-2,6,bw+4,8);
     ctx.fillStyle=C.slimeDark; ctx.fillRect(bx,8,bw,4);
-    ctx.fillStyle=C.slime; ctx.fillRect(bx,8,bw*clamp(e.hp/BOSS_HP,0,1),4);
-    text(e.fly?'FLY':e.variant==='split'?'SPLIT':e.shield?'SHIELD':'ELITE', bx+bw/2, 6, 7, C.white, 'center');
+    ctx.fillStyle=e.mega?C.heart:C.slime; ctx.fillRect(bx,8,bw*clamp(e.hp/(e.mega?MEGA_HP:BOSS_HP),0,1),4);
+    text(e.mega?'MEGA':e.fly?'FLY':e.variant==='split'?'SPLIT':e.shield?'SHIELD':'ELITE', bx+bw/2, 6, 7, C.white, 'center');
     break;
   }
 }
@@ -1354,7 +1503,7 @@ function drawMenu(){
   ctx.globalAlpha=a; text('▶ 开始游戏 ◀', W/2, 202, 12, C.player, 'center'); ctx.globalAlpha=1;
   text('HI '+best+'    成就 '+achvCount()+'/'+Object.keys(ACHV_NAMES).length, W/2, 222, 8, C.grass, 'center');
   text('空格/点击跳跃 · P暂停 · M静音', W/2, 236, 7, C.star, 'center');
-  text('机关：冰面 · 火柱 · 气泡 · 激光 · 流沙 · 竹竿 · 龙卷风', W/2, 250, 7, '#9a8ab0', 'center');
+  text('机关 7 类 · 道具 6 种 · Boss 变体 4 种 + 终局大 Boss', W/2, 250, 7, '#9a8ab0', 'center');
 }
 function drawPause(){
   ctx.fillStyle='rgba(13,11,24,.55)'; ctx.fillRect(0,0,W,H);
